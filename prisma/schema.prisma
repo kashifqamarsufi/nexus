@@ -1,0 +1,229 @@
+// NEXUS Logistics Intelligence Platform - Database Schema
+// Phase 1: Foundation
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// WAREHOUSES - Physical pickup locations
+// ============================================
+model Warehouse {
+  id          String   @id                 // e.g., "KR-05", "KR-11", "KR-53", "KR-72"
+  name        String                        // Display name
+  city        String   @default("Riyadh")
+  lat         Float                         // GPS Latitude
+  lng         Float                         // GPS Longitude
+  isActive    Boolean  @default(true)
+  queueDepth  Int      @default(0)         // Current order queue depth
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  drivers     Driver[]
+  orders      Order[]
+
+  @@map("warehouses")
+}
+
+// ============================================
+// DRIVERS - Delivery drivers
+// ============================================
+model Driver {
+  id              String   @id @default(cuid())
+  driverCode      String   @unique           // e.g., "DRV-1847"
+  name            String
+  phone           String?
+  vehicleType     String   @default("motorcycle") // motorcycle, car, van
+  status          String   @default("offline")    // offline, idle, at_pickup, delivering
+  lat             Float?
+  lng             Float?
+  speed           Float    @default(0)
+  heading         Float    @default(0)
+  performanceScore Float   @default(75.0)    // 0-100 score
+  totalDeliveries Int      @default(0)
+  successfulDeliveries Int @default(0)
+  rating          Float    @default(4.5)
+  lastPingAt      DateTime?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  homeWarehouseId String?
+  homeWarehouse   Warehouse? @relation(fields: [homeWarehouseId], references: [id])
+  pings           DriverPing[]
+  assignedOrders  Order[]
+  alerts          Alert[]
+
+  @@map("drivers")
+}
+
+// ============================================
+// ORDERS - Delivery orders
+// ============================================
+model Order {
+  id                String   @id @default(cuid())
+  orderCode         String   @unique           // External order ID from vendor
+  vendorName        String                      // e.g., "Domino's", "Kudu"
+  customerName      String?
+  customerPhone     String?
+  customerAddress   String
+  customerLat       Float?
+  customerLng       Float?
+  pickupWarehouseId String
+  pickupWarehouse   Warehouse @relation(fields: [pickupWarehouseId], references: [id])
+  driverId          String?
+  driver            Driver?   @relation(fields: [driverId], references: [id])
+  
+  status            String   @default("pending") // pending, assigned, picked_up, delivered, failed, cancelled
+  priority          String   @default("normal")  // low, normal, high, urgent
+  
+  // ETA fields
+  promisedEta       DateTime?
+  predictedEta      DateTime?
+  actualDeliveryAt  DateTime?
+  
+  // Batching
+  isBatched         Boolean  @default(false)
+  batchGroupId      String?
+  batchPosition     Int      @default(0)        // Position in batch (1, 2, 3...)
+  
+  // Tracking timestamps
+  assignedAt        DateTime?
+  pickedUpAt        DateTime?
+  
+  // Carbon tracking
+  distanceKm        Float    @default(0)
+  carbonKg          Float    @default(0)
+  
+  // ML predictions (Phase 2)
+  mlEtaMinutes      Int?
+  baseEtaMinutes    Int?
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  pings             DriverPing[]
+  alerts            Alert[]
+  routeSegment      RouteSegment?
+
+  @@index([status])
+  @@index([driverId])
+  @@index([pickupWarehouseId])
+  @@map("orders")
+}
+
+// ============================================
+// DRIVER_PINGS - GPS location updates
+// ============================================
+model DriverPing {
+  id        String   @id @default(cuid())
+  driverId  String
+  driver    Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  orderId   String?
+  order     Order?   @relation(fields: [orderId], references: [id])
+  lat       Float
+  lng       Float
+  speed     Float    @default(0)
+  heading   Float    @default(0)
+  accuracy  Float    @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([driverId])
+  @@index([createdAt])
+  @@map("driver_pings")
+}
+
+// ============================================
+// ALERTS - Anomaly detection alerts
+// ============================================
+model Alert {
+  id              String   @id @default(cuid())
+  type            String                       // driver_stalled, sla_breach, wrong_direction, vendor_delay, cluster_failure
+  severity        String   @default("medium")  // critical, high, medium, low
+  message         String
+  recommendedAction String?
+  
+  driverId        String?
+  driver          Driver?  @relation(fields: [driverId], references: [id])
+  orderId         String?
+  order           Order?   @relation(fields: [orderId], references: [id])
+  
+  isResolved      Boolean  @default(false)
+  resolvedAt      DateTime?
+  resolvedBy      String?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([isResolved])
+  @@index([severity])
+  @@map("alerts")
+}
+
+// ============================================
+// HEATMAP_SNAPSHOTS - Demand predictions
+// ============================================
+model HeatmapSnapshot {
+  id                String   @id @default(cuid())
+  district          String                        // District name
+  zone              String   @default("cool")     // hot, warm, cool
+  predictedOrders   Int      @default(0)
+  confidence        Float    @default(0)
+  recommendedDrivers Int     @default(0)
+  hour              Int                           // Hour of day (0-23)
+  dayOfWeek         Int                           // Day of week (0-6)
+  createdAt         DateTime @default(now())
+
+  @@index([district, hour, dayOfWeek])
+  @@map("heatmap_snapshots")
+}
+
+// ============================================
+// ROUTE_SEGMENTS - Historical route data for ML
+// ============================================
+model RouteSegment {
+  id              String   @id @default(cuid())
+  orderId         String   @unique
+  order           Order    @relation(fields: [orderId], references: [id])
+  
+  originLat       Float
+  originLng       Float
+  destLat         Float
+  destLng         Float
+  
+  actualMinutes   Int                          // Actual time taken
+  predictedMinutes Int                         // Google Maps prediction
+  differenceMinutes Int                        // actual - predicted (for ML training)
+  
+  weather         String   @default("clear")
+  timeOfDay       Int                          // Hour of day
+  dayOfWeek       Int                          // Day of week
+  district        String?
+  
+  driverId        String?
+  createdAt       DateTime @default(now())
+
+  @@map("route_segments")
+}
+
+// ============================================
+// SETTINGS - System configuration
+// ============================================
+model Setting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  category  String   @default("general")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
